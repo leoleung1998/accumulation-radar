@@ -1301,14 +1301,19 @@ def main():
         ambush.sort(key=lambda x: x["total"], reverse=True)
         
         # ═══════════════════════════════════════
-        # 5. OHLC 入场时机扫描（对上榜币逐个判断）
+        # 5. 预先构建热度榜 + OHLC 入场时机扫描
         # ═══════════════════════════════════════
-        # 收集所有上榜的 symbol（热度前8 + 追多前8 + 综合前8 + 埋伏前8）
+        hot_coins = sorted(
+            [d for d in coin_data.values() if d["heat"] > 0],
+            key=lambda x: x["heat"], reverse=True
+        )
+
+        # 收集所有上榜的 symbol（热度前8 + 追多前8 + 综合前15 + 埋伏前15）
         timing_syms = set()
         for s in hot_coins[:8]:  timing_syms.add(s["sym"])
         for s in chase[:8]:      timing_syms.add(s["sym"])
-        for s in combined[:8]:   timing_syms.add(s["sym"])
-        for s in ambush[:8]:     timing_syms.add(s["sym"])
+        for s in combined[:15]:  timing_syms.add(s["sym"])
+        for s in ambush[:15]:    timing_syms.add(s["sym"])
 
         print(f"  ⏱ OHLC时机扫描 {len(timing_syms)} 个上榜币...")
         timing_map = {}  # sym -> timing dict
@@ -1334,11 +1339,7 @@ def main():
             f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
         ]
 
-        # 表0: 热度榜（最重要，放最前面）
-        hot_coins = sorted(
-            [d for d in coin_data.values() if d["heat"] > 0],
-            key=lambda x: x["heat"], reverse=True
-        )
+        # 表0: 热度榜
         if hot_coins:
             lines.append(f"\n🔥 **热度榜** (CG趋势+成交量暴增)")
             for s in hot_coins[:8]:
@@ -1393,7 +1394,28 @@ def main():
                 f"  {s['coin']:<7} {s['total']}分 | {' '.join(tags)} {tt}"
             )
 
-        # 表4: 入场时机详情（只展示🟢太早 和 🟡入场/观察 的币，过滤掉🔴🟫）
+        # 表4: 综合×埋伏 双榜交集 — 按均分排序
+        combined_score_map = {s["coin"]: s["total"] for s in combined}
+        ambush_score_map   = {s["coin"]: s["total"] for s in ambush}
+        dual_coins = set(combined_score_map) & set(ambush_score_map)
+        if dual_coins:
+            dual = sorted(
+                [{"coin": c,
+                  "c_sc": combined_score_map[c],
+                  "a_sc": ambush_score_map[c],
+                  "avg":  (combined_score_map[c] + ambush_score_map[c]) / 2,
+                  "sym":  next(s["sym"] for s in combined if s["coin"] == c)}
+                 for c in dual_coins],
+                key=lambda x: x["avg"], reverse=True
+            )
+            lines.append(f"\n🏆 **双榜精选** (综合+埋伏均分，共{len(dual)}个)")
+            for d in dual[:8]:
+                tt = timing_tag(d["sym"])
+                lines.append(
+                    f"  {d['coin']:<8} 均分{d['avg']:.0f} | 综合{d['c_sc']}分 埋伏{d['a_sc']}分 {tt}"
+                )
+
+        # 表5: 入场时机详情（只展示🟢太早 和 🟡入场/观察 的币，过滤掉🔴🟫）
         early_entry = [
             (sym, t) for sym, t in timing_map.items()
             if t["label"] in ("🟢太早", "🟡入场", "🟡观察")
