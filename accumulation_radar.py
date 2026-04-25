@@ -300,6 +300,98 @@ def scan_accumulation_pool():
     return results
 
 
+def get_ohlc_timing(symbol: str) -> dict:
+    """
+    拉取最近 72 根 1h K线，判断当前是"太早/入场/太晚/已转跌"。
+
+    返回:
+      label  : "🟢早" | "🟡入场" | "🔴晚" | "⚫转跌"
+      reason : 一句话理由
+      ext_pct: 当前价格距 MA25 的偏离百分比（+= 已涨多少）
+      spike  : 近6根K内有无单根 >8% 的暴涨柱
+      trend3 : 最近3根K的颜色 ("↑↑↑" / "↓↓↑" 等)
+    """
+    kl = api_get("/fapi/v1/klines", {"symbol": symbol, "interval": "1h", "limit": 72})
+    if not kl or len(kl) < 25:
+        return {"label": "❓", "reason": "数据不足", "ext_pct": 0, "spike": False, "trend3": ""}
+
+    bars = [{"o": float(k[1]), "h": float(k[2]), "l": float(k[3]), "c": float(k[4]),
+             "v": float(k[7])} for k in kl]
+
+    closes = [b["c"] for b in bars]
+    price  = closes[-1]
+
+    # ── MAs ──────────────────────────────────────────────────────────────
+    ma7  = sum(closes[-7:])  / 7
+    ma25 = sum(closes[-25:]) / 25
+
+    ext_ma25 = (price - ma25) / ma25 * 100   # % above MA25 (key: shows how extended)
+
+    # ── Spike detection: any single 1h candle >8% body in last 6 bars ──
+    spike = False
+    spike_bars_ago = 0
+    for i, b in enumerate(bars[-6:], 1):
+        body_pct = abs(b["c"] - b["o"]) / b["o"] * 100 if b["o"] > 0 else 0
+        if body_pct >= 8:
+            spike = True
+            spike_bars_ago = i
+
+    # ── Candle color trend (last 3 bars) ──────────────────────────────
+    def arrow(b): return "↑" if b["c"] >= b["o"] else "↓"
+    trend3 = "".join(arrow(b) for b in bars[-3:])
+
+    # ── Volume trend: recent 6h avg vs prior 18h avg ──────────────────
+    vol_recent = sum(b["v"] for b in bars[-6:])  / 6
+    vol_prior  = sum(b["v"] for b in bars[-24:-6]) / 18
+    vol_ratio  = vol_recent / vol_prior if vol_prior > 0 else 1
+
+    # ── Price position in 48h range ────────────────────────────────────
+    hi48 = max(b["h"] for b in bars[-48:])
+    lo48 = min(b["l"] for b in bars[-48:])
+    range_pos = (price - lo48) / (hi48 - lo48) * 100 if hi48 > lo48 else 50
+
+    # ── Classification logic ──────────────────────────────────────────
+    # ⚫ 转跌: spiked recently, now red candles pulling back below MA7
+    if spike and trend3.count("↓") >= 2 and price < ma7:
+        label  = "⚫转跌"
+        reason = f"近{spike_bars_ago}h有暴涨柱，现价已跌破MA7，做空回调中"
+
+    # 🔴 太晚: price massively extended above MA25, or spike + price still above but vol dying
+    elif ext_ma25 > 25 or (spike and vol_ratio < 0.6 and price > ma25):
+        label  = "🔴太晚"
+        reason = f"价格偏离MA25 +{ext_ma25:.0f}%，已在高位{'' if not spike else f'（近{spike_bars_ago}h暴涨后）'}"
+
+    # 🟡 入场: breaking out but not yet extended — MA7 just crossed above MA25, vol rising
+    elif (ma7 > ma25) and (0 < ext_ma25 <= 25) and vol_ratio > 1.2 and trend3.count("↑") >= 2:
+        label  = "🟡入场"
+        reason = f"MA7上穿MA25，量增{vol_ratio:.1f}x，突破初期 偏离{ext_ma25:.0f}%"
+
+    # 🟡 入场: price at bottom of recent range but OI already rising (暗流)
+    elif range_pos < 35 and vol_ratio > 1.3 and ext_ma25 < 5:
+        label  = "🟡入场"
+        reason = f"48h低位区({range_pos:.0f}%)但量在放大{vol_ratio:.1f}x，暗流蓄势"
+
+    # 🟢 太早: flat, low vol, below/near MAs — still in base
+    elif ext_ma25 < 8 and vol_ratio < 1.2 and not spike:
+        label  = "🟢太早"
+        reason = f"价格贴近MA25({ext_ma25:+.0f}%)，量未放大({vol_ratio:.1f}x)，仍在底部蓄势"
+
+    # default: ambiguous
+    else:
+        label  = "🟡观察"
+        reason = f"偏离MA25 {ext_ma25:+.0f}%，量比{vol_ratio:.1f}x，趋势{trend3}"
+
+    return {
+        "label":    label,
+        "reason":   reason,
+        "ext_pct":  round(ext_ma25, 1),
+        "spike":    spike,
+        "trend3":   trend3,
+        "vol_ratio": round(vol_ratio, 2),
+        "range_pos": round(range_pos, 0),
+    }
+
+
 def scan_oi_changes(watchlist_symbols):
     """对标的池内的币扫描OI异动"""
     print(f"📊 扫描OI异动（{len(watchlist_symbols)}个标的）...")
@@ -1042,19 +1134,39 @@ def main():
         ambush.sort(key=lambda x: x["total"], reverse=True)
         
         # ═══════════════════════════════════════
-        # 5. 生成推送 + 值得关注提醒
+        # 5. OHLC 入场时机扫描（对上榜币逐个判断）
+        # ═══════════════════════════════════════
+        # 收集所有上榜的 symbol（热度前8 + 追多前8 + 综合前8 + 埋伏前8）
+        timing_syms = set()
+        for s in hot_coins[:8]:  timing_syms.add(s["sym"])
+        for s in chase[:8]:      timing_syms.add(s["sym"])
+        for s in combined[:8]:   timing_syms.add(s["sym"])
+        for s in ambush[:8]:     timing_syms.add(s["sym"])
+
+        print(f"  ⏱ OHLC时机扫描 {len(timing_syms)} 个上榜币...")
+        timing_map = {}  # sym -> timing dict
+        for sym in timing_syms:
+            timing_map[sym] = get_ohlc_timing(sym)
+            time.sleep(0.1)
+
+        # ═══════════════════════════════════════
+        # 6. 生成推送 + 值得关注提醒
         # ═══════════════════════════════════════
         def mcap_str(v):
             if v >= 1e6: return f"${v/1e6:.0f}M"
             if v >= 1e3: return f"${v/1e3:.0f}K"
             return f"${v:.0f}"
-        
+
+        def timing_tag(sym):
+            t = timing_map.get(sym)
+            return t["label"] if t else ""
+
         now = datetime.now(timezone(timedelta(hours=8)))
         lines = [
             f"🏦 **庄家雷达** 三策略+热度",
             f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
         ]
-        
+
         # 表0: 热度榜（最重要，放最前面）
         hot_coins = sorted(
             [d for d in coin_data.values() if d["heat"] > 0],
@@ -1071,21 +1183,23 @@ def main():
                 if s["in_pool"]: tags.append(f"💤池{s['sw_days']}天")
                 fr_tag = f"🧊{s['fr_pct']:.2f}%" if s["fr_pct"] < -0.03 else ""
                 if fr_tag: tags.append(fr_tag)
+                tt = timing_tag(s["sym"])
                 lines.append(
-                    f"  {s['coin']:<8} ~{mcap_str(s['est_mcap'])} 涨{s['px_chg']:+.0f}% | {' '.join(tags)}"
+                    f"  {s['coin']:<8} ~{mcap_str(s['est_mcap'])} 涨{s['px_chg']:+.0f}% | {' '.join(tags)} {tt}"
                 )
-        
+
         # 表1: 追多
         lines.append(f"\n🔥 **追多** (按费率排名)")
         if chase:
             for s in chase[:8]:
+                tt = timing_tag(s["sym"])
                 lines.append(
                     f"  {s['coin']:<7} 费率{s['fr_pct']:+.3f}% {s['trend']}"
-                    f" | 涨{s['px_chg']:+.0f}% | ~{mcap_str(s['est_mcap'])}"
+                    f" | 涨{s['px_chg']:+.0f}% | ~{mcap_str(s['est_mcap'])} {tt}"
                 )
         else:
             lines.append("  暂无（需涨>3%+费率负）")
-        
+
         # 表2: 综合
         lines.append(f"\n📊 **综合** (费率+市值+横盘+OI 各25)")
         for s in combined[:8]:
@@ -1094,10 +1208,11 @@ def main():
             if s["m_sc"] >= 12: dims.append(f"💎{mcap_str(s['est_mcap'])}")
             if s["s_sc"] >= 10: dims.append(f"💤{s['sw_days']}天")
             if s["o_sc"] >= 10: dims.append(f"⚡OI{s['d6h']:+.0f}%")
+            tt = timing_tag(s["sym"])
             lines.append(
-                f"  {s['coin']:<7} {s['total']}分 | {' '.join(dims)}"
+                f"  {s['coin']:<7} {s['total']}分 | {' '.join(dims)} {tt}"
             )
-        
+
         # 表3: 埋伏
         lines.append(f"\n🎯 **埋伏** (市值35+OI30+横盘20+费率15)")
         for s in ambush[:8]:
@@ -1106,9 +1221,33 @@ def main():
             if s["d6h"] > 2 and abs(s["px_chg"]) < 5: tags.append("🎯暗流")
             if s["sw_days"] >= 45: tags.append(f"横盘{s['sw_days']}天")
             if s["fr_pct"] < -0.01: tags.append(f"费率{s['fr_pct']:.2f}%")
+            tt = timing_tag(s["sym"])
             lines.append(
-                f"  {s['coin']:<7} {s['total']}分 | {' '.join(tags)}"
+                f"  {s['coin']:<7} {s['total']}分 | {' '.join(tags)} {tt}"
             )
+
+        # 表4: 入场时机详情（只展示🟢太早 和 🟡入场/观察 的币，过滤掉🔴🟫）
+        early_entry = [
+            (sym, t) for sym, t in timing_map.items()
+            if t["label"] in ("🟢太早", "🟡入场", "🟡观察")
+        ]
+        late_dump = [
+            (sym, t) for sym, t in timing_map.items()
+            if t["label"] in ("🔴太晚", "⚫转跌")
+        ]
+
+        if early_entry or late_dump:
+            lines.append(f"\n⏱ **入场时机** (1h K线确认)")
+            if early_entry:
+                lines.append("  可关注:")
+                for sym, t in sorted(early_entry, key=lambda x: x[1]["label"]):
+                    coin = sym.replace("USDT", "")
+                    lines.append(f"    {t['label']} {coin:<8} {t['reason']}  (MA25偏离{t['ext_pct']:+.0f}% 量比{t['vol_ratio']}x K{t['trend3']})")
+            if late_dump:
+                lines.append("  已过时/转跌，谨慎:")
+                for sym, t in late_dump:
+                    coin = sym.replace("USDT", "")
+                    lines.append(f"    {t['label']} {coin:<8} {t['reason']}")
         
         # ═══ 值得关注提醒 ═══
         highlights = []
@@ -1164,6 +1303,7 @@ def main():
         lines.append("  🔥热度=CG热搜+成交量暴增(OI领先指标)")
         lines.append("  费率负=空头燃料 | 💎市值 | 💤横盘(收筹)")
         lines.append("  🔥💤热度+收筹=最强预判 | 🔥⚡热度+OI=正在发生")
+        lines.append("  ⏱时机: 🟢太早=底部蓄势 🟡入场=突破初期 🔴太晚=高位 ⚫转跌=已反转")
         
         report = "\n".join(lines)
         send_telegram(report)
