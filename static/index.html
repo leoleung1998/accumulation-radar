@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Holdings — Binance</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #181a20;
+      color: #eaecef;
+      font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Top nav bar ──────────────────────── */
+    .topbar {
+      background: #1e2329;
+      border-bottom: 1px solid #2b3139;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 48px;
+    }
+    .brand { font-size: 1rem; font-weight: 700; color: #f0b90b; letter-spacing: 0.03em; }
+    .topbar-meta { color: #848e9c; font-size: 0.72rem; }
+    #last-updated { color: #848e9c; font-size: 0.7rem; }
+
+    /* ── Tabs ─────────────────────────────── */
+    .tabs {
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #2b3139;
+      padding: 0 24px;
+      background: #1e2329;
+      gap: 0;
+    }
+    .tab {
+      padding: 12px 20px;
+      font-size: 0.82rem;
+      color: #848e9c;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      white-space: nowrap;
+      transition: color 0.15s;
+    }
+    .tab:hover { color: #eaecef; }
+    .tab.active { color: #eaecef; border-bottom-color: #f0b90b; font-weight: 500; }
+    .tab-badge {
+      background: #2b3139;
+      color: #848e9c;
+      border-radius: 8px;
+      padding: 1px 5px;
+      font-size: 0.65rem;
+      margin-left: 4px;
+    }
+    .tab.active .tab-badge { background: #f0b90b22; color: #f0b90b; }
+
+    /* ── Toolbar ──────────────────────────── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 16px;
+      padding: 12px 24px;
+      background: #181a20;
+      border-bottom: 1px solid #2b3139;
+    }
+    .search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .search-icon {
+      position: absolute;
+      left: 8px;
+      color: #848e9c;
+      font-size: 12px;
+    }
+    .search-input {
+      background: #2b3139;
+      border: 1px solid #2b3139;
+      border-radius: 4px;
+      color: #eaecef;
+      padding: 5px 10px 5px 26px;
+      font-size: 0.78rem;
+      width: 160px;
+      outline: none;
+    }
+    .search-input:focus { border-color: #f0b90b44; }
+    .search-input::placeholder { color: #4a505a; }
+    .hide-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #848e9c;
+      font-size: 0.78rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    .hide-label input { accent-color: #f0b90b; cursor: pointer; }
+    .refresh-info { color: #4a505a; font-size: 0.68rem; }
+    #countdown-pill {
+      display: inline-block;
+      background: #2b3139;
+      border-radius: 4px;
+      padding: 2px 7px;
+      color: #848e9c;
+      font-size: 0.65rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Summary row ──────────────────────── */
+    .summary {
+      display: flex;
+      gap: 32px;
+      padding: 16px 24px;
+      background: #1e2329;
+      border-bottom: 1px solid #2b3139;
+    }
+    .sum-item { display: flex; flex-direction: column; gap: 3px; }
+    .sum-label { color: #848e9c; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .sum-value { font-size: 1.1rem; font-weight: 600; }
+    .sum-sub { color: #848e9c; font-size: 0.7rem; }
+
+    /* ── Table ────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 780px;
+    }
+    thead tr {
+      background: #1e2329;
+      border-bottom: 1px solid #2b3139;
+    }
+    thead th {
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: #848e9c;
+      white-space: nowrap;
+      letter-spacing: 0.02em;
+    }
+    thead th.r { text-align: right; }
+    thead th .sort { font-size: 0.6rem; margin-left: 2px; opacity: 0.6; }
+
+    tbody tr {
+      border-bottom: 1px solid #2b3139;
+      transition: background 0.1s;
+    }
+    tbody tr:hover { background: #1e2329; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody td {
+      padding: 14px 16px;
+      vertical-align: middle;
+    }
+    tbody td.r { text-align: right; }
+
+    /* Coin cell */
+    .coin-wrap { display: flex; align-items: center; gap: 10px; }
+    .coin-icon {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: #2b3139;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #f0b90b;
+      flex-shrink: 0;
+    }
+    .coin-name { font-weight: 600; font-size: 0.88rem; }
+    .coin-chevron { color: #848e9c; font-size: 0.65rem; margin-left: 2px; }
+
+    /* Balance cell */
+    .bal-total { font-size: 0.85rem; font-weight: 500; }
+    .bal-usd { color: #848e9c; font-size: 0.72rem; margin-top: 2px; }
+
+    /* Available / In Order */
+    .avail-row { font-size: 0.82rem; }
+    .avail-label { color: #848e9c; font-size: 0.68rem; }
+
+    /* PnL */
+    .pos { color: #0ecb81; }
+    .neg { color: #f6465d; }
+    .muted { color: #848e9c; }
+
+    /* Actions */
+    .actions { display: flex; gap: 12px; align-items: center; }
+    .action-link {
+      color: #f0b90b;
+      font-size: 0.78rem;
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .action-link:hover { opacity: 0.8; }
+
+    .empty-row td { text-align: center; color: #848e9c; padding: 60px; font-size: 0.85rem; }
+    .error-row td  { text-align: center; color: #f6465d;  padding: 24px; font-size: 0.82rem; }
+
+    .spinner {
+      display: inline-block;
+      width: 12px; height: 12px;
+      border: 2px solid #2b3139;
+      border-top-color: #f0b90b;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="brand">🏦 Portfolio Dashboard</div>
+    <div id="last-updated" class="topbar-meta">—</div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab">Open Orders <span class="tab-badge" id="open-orders-count">—</span></div>
+    <div class="tab">Order History</div>
+    <div class="tab">Trade History</div>
+    <div class="tab active">Holdings</div>
+    <div class="tab">Bots</div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <label class="hide-label">
+      <input type="checkbox" id="hide-dust"> Hide low balance assets
+    </label>
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input class="search-input" type="text" id="search" placeholder="Search">
+    </div>
+    <span id="countdown-pill">— s</span>
+  </div>
+
+  <!-- Summary -->
+  <div class="summary">
+    <div class="sum-item">
+      <span class="sum-label">Total Balance</span>
+      <span class="sum-value" id="s-total">—</span>
+      <span class="sum-sub" id="s-total-usd">—</span>
+    </div>
+    <div class="sum-item">
+      <span class="sum-label">Total PnL (unrealised)</span>
+      <span class="sum-value" id="s-pnl">—</span>
+      <span class="sum-sub" id="s-pnl-pct">—</span>
+    </div>
+    <div class="sum-item">
+      <span class="sum-label">Assets</span>
+      <span class="sum-value" id="s-assets">—</span>
+      <span class="sum-sub">holdings</span>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Coin <span class="sort">⇅</span></th>
+          <th class="r">Total balance <span class="sort">⇅</span></th>
+          <th class="r">Available / In Order <span class="sort">⇅</span></th>
+          <th class="r">Average Price <span class="sort">⇅</span></th>
+          <th class="r">PnL / PnL% <span class="sort">⇅</span></th>
+          <th class="r">Action</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr class="empty-row">
+          <td colspan="6"><span class="spinner"></span>Loading holdings…</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    let countdown = 10;
+    let allHoldings = [];
+    const $ = id => document.getElementById(id);
+
+    /* ── formatters ────────────────────────── */
+    function fmtQty(n) {
+      if (n === null || n === undefined) return '—';
+      const v = parseFloat(n);
+      if (v === 0) return '0.00000000';
+      if (v >= 1000000) return v.toLocaleString('en-US', {maximumFractionDigits: 2});
+      if (v >= 1)       return v.toFixed(8);
+      return v.toFixed(8);
+    }
+    function fmtPrice(n) {
+      if (n === null || n === undefined) return '—';
+      const v = parseFloat(n);
+      if (v >= 1000)  return v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      if (v >= 1)     return v.toFixed(6);
+      if (v >= 0.001) return v.toFixed(6);
+      return v.toFixed(8);
+    }
+    function fmtUsd(n) {
+      if (n === null || n === undefined) return '—';
+      const v = parseFloat(n);
+      return '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    }
+    function fmtSign(n, decimals = 8) {
+      if (n === null || n === undefined) return '—';
+      const v = parseFloat(n);
+      const s = Math.abs(v).toFixed(decimals);
+      return (v >= 0 ? '+' : '−') + s;
+    }
+    function fmtPct(n) {
+      if (n === null || n === undefined) return '—';
+      const v = parseFloat(n);
+      return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+    }
+    function colorClass(n) {
+      if (n === null || n === undefined) return 'muted';
+      return parseFloat(n) >= 0 ? 'pos' : 'neg';
+    }
+    function initials(asset) {
+      return asset.slice(0, 3);
+    }
+
+    /* ── render ────────────────────────────── */
+    function render(holdings) {
+      const query = $('search').value.trim().toUpperCase();
+      const hideDust = $('hide-dust').checked;
+
+      const filtered = holdings.filter(h => {
+        if (query && !h.asset.includes(query)) return false;
+        if (hideDust && h.value_usdt < 5) return false;
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        $('tbody').innerHTML = '<tr class="empty-row"><td colspan="6">No holdings found</td></tr>';
+        return;
+      }
+
+      // Total PnL from assets that have avg price
+      const totalPnl = holdings.reduce((s, h) => s + (h.pnl_usdt ?? 0), 0);
+      const totalVal = holdings.reduce((s, h) => s + h.value_usdt, 0);
+
+      $('tbody').innerHTML = filtered.map(h => {
+        const isStable = h.avg_price === null && h.pnl_usdt === null;
+        const pnlDisplay = h.pnl_usdt !== null
+          ? `<span class="${colorClass(h.pnl_usdt)}">${fmtSign(h.pnl_usdt, 8)}</span>
+             <span class="muted"> / </span>
+             <span class="${colorClass(h.pnl_pct)}">${fmtPct(h.pnl_pct)}</span>`
+          : '<span class="muted">-- / --</span>';
+
+        const avgDisplay = h.avg_price !== null
+          ? fmtPrice(h.avg_price)
+          : '<span class="muted">--</span>';
+
+        const actions = isStable
+          ? `<a class="action-link">Add Funds</a>`
+          : `<a class="action-link">TP/SL</a> <a class="action-link">Add Funds</a>`;
+
+        return `<tr>
+          <td>
+            <div class="coin-wrap">
+              <div class="coin-icon">${initials(h.asset)}</div>
+              <span class="coin-name">${h.asset}</span>
+              <span class="coin-chevron">›</span>
+            </div>
+          </td>
+          <td class="r">
+            <div class="bal-total">${fmtQty(h.total)}</div>
+            <div class="bal-usd">≈ ${fmtUsd(h.value_usdt)}</div>
+          </td>
+          <td class="r">
+            <div class="avail-row">${fmtQty(h.free)} / ${fmtQty(h.locked)}</div>
+          </td>
+          <td class="r">${avgDisplay}</td>
+          <td class="r">${pnlDisplay}</td>
+          <td class="r">
+            <div class="actions" style="justify-content:flex-end">${actions}</div>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    /* ── fetch & update cards ───────────────── */
+    async function refresh() {
+      try {
+        const res = await fetch('/api/portfolio');
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+
+        allHoldings = json.data.holdings;
+        const total = json.data.total_usdt;
+
+        const totalPnl = allHoldings.reduce((s, h) => s + (h.pnl_usdt ?? 0), 0);
+        const costBasis = allHoldings.reduce((s, h) =>
+          h.avg_price ? s + h.avg_price * h.total : s, 0);
+        const pnlPct = costBasis > 0 ? totalPnl / costBasis * 100 : null;
+
+        $('s-total').textContent = fmtUsd(total);
+        $('s-total-usd').textContent = total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' USDT';
+
+        const pnlEl = $('s-pnl');
+        pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' USDT';
+        pnlEl.className = 'sum-value ' + colorClass(totalPnl);
+
+        const pnlPctEl = $('s-pnl-pct');
+        pnlPctEl.textContent = pnlPct !== null ? fmtPct(pnlPct) : '—';
+        pnlPctEl.className = 'sum-sub ' + colorClass(pnlPct);
+
+        $('s-assets').textContent = allHoldings.length;
+        $('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+        render(allHoldings);
+      } catch (e) {
+        $('tbody').innerHTML = `<tr class="error-row"><td colspan="6">⚠ ${e.message}</td></tr>`;
+      }
+    }
+
+    /* ── search + filter ───────────────────── */
+    $('search').addEventListener('input', () => render(allHoldings));
+    $('hide-dust').addEventListener('change', () => render(allHoldings));
+
+    /* ── countdown ─────────────────────────── */
+    function tick() {
+      countdown--;
+      $('countdown-pill').textContent = `${countdown}s`;
+      if (countdown <= 0) { countdown = 10; refresh(); }
+    }
+
+    refresh();
+    setInterval(tick, 1000);
+  </script>
+</body>
+</html>

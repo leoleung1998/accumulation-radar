@@ -99,6 +99,12 @@ def init_db():
         vol_ratio REAL,
         details TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS hl_seen_trades (
+        trade_id   TEXT PRIMARY KEY,
+        coin       TEXT,
+        notional   REAL,
+        alerted_at TEXT
+    )""")
     conn.commit()
     return conn
 
@@ -615,6 +621,117 @@ def build_fuel_report(fuel_targets, squeeze_targets):
     return "\n".join(lines)
 
 
+# ── Hyperliquid 鲸鱼扫描 ──────────────────────────────────────────────────────
+
+HL_API          = "https://api.hyperliquid.xyz/info"
+HL_MIN_NOTIONAL = 200_000   # 单笔 > $200K
+HL_LOOKBACK_MIN = 65        # 回看65分钟
+
+
+def hl_post(payload: dict):
+    r = requests.post(HL_API, json=payload, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def scan_hyperliquid_whales(conn, pool_coin_names: set) -> list:
+    """扫描收筹池内的币在 Hyperliquid 上的大单，时间窗口65分钟，SQLite去重"""
+    if not pool_coin_names:
+        return []
+
+    print(f"🐋 扫描 Hyperliquid 大单（{len(pool_coin_names)} 个池内币）...")
+
+    try:
+        data = hl_post({"type": "metaAndAssetCtxs"})
+        universe, asset_ctxs = data[0]["universe"], data[1]
+    except Exception as e:
+        print(f"  ❌ HL API 失败: {e}")
+        return []
+
+    hl_idx = {m["name"]: i for i, m in enumerate(universe)}
+    watchable = [c for c in pool_coin_names if c in hl_idx]
+    print(f"  池内币在 HL 上有 {len(watchable)} 个")
+
+    cutoff_ms = int((time.time() - HL_LOOKBACK_MIN * 60) * 1000)
+    alerts = []
+
+    for coin in watchable:
+        ctx      = asset_ctxs[hl_idx[coin]]
+        day_vol  = float(ctx.get("dayNtlVlm", 0))
+        if day_vol < 500_000:
+            continue
+
+        try:
+            trades = hl_post({"type": "recentTrades", "coin": coin})
+        except Exception:
+            continue
+
+        for t in trades:
+            if int(t["time"]) < cutoff_ms:
+                continue
+
+            notional = float(t["px"]) * float(t["sz"])
+            if notional < HL_MIN_NOTIONAL:
+                continue
+
+            trade_id = str(t.get("tid") or t.get("hash", ""))
+            if not trade_id:
+                continue
+            if conn.execute(
+                "SELECT 1 FROM hl_seen_trades WHERE trade_id = ?", (trade_id,)
+            ).fetchone():
+                continue
+
+            now_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+            conn.execute(
+                "INSERT OR IGNORE INTO hl_seen_trades VALUES (?, ?, ?, ?)",
+                (trade_id, coin, notional, now_str)
+            )
+
+            oi_usd      = float(ctx.get("openInterest", 0)) * float(ctx.get("markPx", 0))
+            funding_pct = float(ctx.get("funding", 0)) * 100
+            side_label  = "🟢买多" if t["side"] == "B" else "🔴卖空"
+            trade_time  = datetime.fromtimestamp(
+                int(t["time"]) / 1000, tz=timezone(timedelta(hours=8))
+            ).strftime("%H:%M:%S")
+
+            alerts.append({
+                "coin": coin, "side": side_label,
+                "px": float(t["px"]), "sz": float(t["sz"]),
+                "notional": notional, "trade_time": trade_time,
+                "oi_usd": oi_usd, "funding_pct": funding_pct,
+            })
+
+        time.sleep(0.15)
+
+    conn.commit()
+
+    if alerts:
+        alerts.sort(key=lambda x: x["notional"], reverse=True)
+        now = datetime.now(timezone(timedelta(hours=8)))
+        lines = [
+            f"🐋 **Hyperliquid 鲸鱼入场**",
+            f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+            f"━━━━━━━━━━━━━━━━━━",
+            f"收筹池内检测到 {len(alerts)} 笔大单（>{format_usd(HL_MIN_NOTIONAL)}）",
+            "",
+        ]
+        for a in alerts:
+            lines += [
+                f"{a['side']} **{a['coin']}** | {format_usd(a['notional'])} | {a['trade_time']}",
+                f"  价格 ${a['px']:.6g} × {a['sz']:.2f} 张",
+                f"  OI {format_usd(a['oi_usd'])} | 费率 {a['funding_pct']:.4f}%",
+                f"  ⚠️ 收筹池 + HL 大单 = 最强信号！",
+                "",
+            ]
+        send_telegram("\n".join(lines))
+        print(f"  ✅ 发现 {len(alerts)} 笔大单，已推送")
+    else:
+        print("  ✅ 无新 HL 大单")
+
+    return alerts
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "full"
     
@@ -1050,7 +1167,11 @@ def main():
         
         report = "\n".join(lines)
         send_telegram(report)
-    
+
+        # === Hyperliquid 鲸鱼扫描（收筹池内币，65分钟时间窗口）===
+        pool_coin_names = {sym.replace("USDT", "") for sym in pool_map.keys()}
+        scan_hyperliquid_whales(conn, pool_coin_names)
+
     conn.close()
     print("\n✅ 完成")
 

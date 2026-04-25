@@ -15,4 +15,8 @@ RUN echo "0 10 * * * cd /app && python3 accumulation_radar.py pool >> /app/pool.
     chmod 0644 /etc/cron.d/radar && \
     crontab /etc/cron.d/radar
 
-CMD ["cron", "-f"]
+RUN chmod +x /app/entrypoint.sh
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/entrypoint.sh"]
