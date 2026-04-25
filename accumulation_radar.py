@@ -14,7 +14,6 @@ B. OI异动监控（每小时扫）→ 标的池内的币有OI异动立即报警
 数据源：币安合约API（免费公开，零成本）
 """
 
-import json
 import os
 import sys
 import time
@@ -457,7 +456,7 @@ def format_usd(v):
     return f"${v:.0f}"
 
 
-def build_pool_report(results, top_n=25):
+def build_pool_report(results):
     """生成收筹标的池报告"""
     if not results:
         return ""
@@ -713,6 +712,175 @@ def build_fuel_report(fuel_targets, squeeze_targets):
     return "\n".join(lines)
 
 
+# ── OI 暗流背离扫描 ───────────────────────────────────────────────────────────
+#
+#  全市场扫描「OI大涨但价格没动」的品种。
+#  背离度 = OI变化% / max(|价格变化%|, 1.0)
+#  越高 = 资金涌入越多，价格越没反应 = 潜在爆发前的蓄力
+
+# 背离扫描参数
+DIV_MIN_OI_DELTA_PCT  = 5.0    # OI 6h涨幅至少5%
+DIV_MIN_OI_USD        = 1_000_000  # OI绝对值至少$1M
+DIV_MAX_PRICE_CHG     = 5.0    # 价格24h变化不超过±5%（才算"没动"）
+DIV_MIN_RATIO         = 2.0    # 背离度至少2.0
+DIV_MIN_VOL           = 500_000    # 24h成交至少$500K
+
+
+def scan_oi_divergence(ticker_map: dict, funding_map: dict, pool_syms: set) -> list:
+    """
+    全市场扫描 OI/价格背离度。
+    ticker_map: {sym: {px_chg, vol, price}} — 已从主流程传入，不重复拉取
+    funding_map: {sym: funding_rate}
+    pool_syms: 收筹池 symbol 集合（用于标记）
+
+    返回已排序的背离列表，每项包含 timing 判断。
+    """
+    print("🌊 扫描全市场 OI/价格背离度...")
+
+    # 按24h成交量筛选候选（太小的没意义）
+    candidates = [
+        sym for sym, tk in ticker_map.items()
+        if tk["vol"] >= DIV_MIN_VOL
+    ]
+    print(f"  候选 {len(candidates)} 个（24h成交>{format_usd(DIV_MIN_VOL)}）")
+
+    results = []
+
+    for i, sym in enumerate(candidates):
+        # 拉1h OI历史，取7根：curr(0) / 1h前(-2) / 6h前(index 0)
+        oi_hist = api_get("/futures/data/openInterestHist", {
+            "symbol": sym, "period": "1h", "limit": 7
+        })
+        if not oi_hist or len(oi_hist) < 3:
+            continue
+
+        curr_oi  = float(oi_hist[-1]["sumOpenInterestValue"])
+        prev_1h  = float(oi_hist[-2]["sumOpenInterestValue"])
+        prev_6h  = float(oi_hist[0]["sumOpenInterestValue"])
+
+        if prev_6h <= 0 or curr_oi < DIV_MIN_OI_USD:
+            continue
+
+        oi_d1h = (curr_oi - prev_1h) / prev_1h * 100 if prev_1h > 0 else 0
+        oi_d6h = (curr_oi - prev_6h) / prev_6h * 100
+
+        if oi_d6h < DIV_MIN_OI_DELTA_PCT:
+            continue
+
+        tk      = ticker_map[sym]
+        px_chg  = tk["px_chg"]   # 24h price change %
+        vol_24h = tk["vol"]
+        price   = tk["price"]
+        fr      = funding_map.get(sym, 0) * 100
+        coin    = sym.replace("USDT", "")
+
+        # 背离度：6h OI涨幅 ÷ 24h价格绝对变化（最小1%防止除零）
+        divergence = oi_d6h / max(abs(px_chg), 1.0)
+
+        if divergence < DIV_MIN_RATIO:
+            continue
+
+        # 价格变化不能太大（已大涨说明已经反映了，不是背离）
+        if abs(px_chg) > DIV_MAX_PRICE_CHG:
+            continue
+
+        # OHLC 时机判断
+        timing = get_ohlc_timing(sym)
+
+        results.append({
+            "sym":        sym,
+            "coin":       coin,
+            "price":      price,
+            "oi_usd":     curr_oi,
+            "oi_d1h":     oi_d1h,
+            "oi_d6h":     oi_d6h,
+            "px_chg":     px_chg,
+            "divergence": divergence,
+            "vol_24h":    vol_24h,
+            "fr_pct":     fr,
+            "in_pool":    sym in pool_syms,
+            "timing":     timing,
+        })
+
+        if (i + 1) % 20 == 0:
+            time.sleep(0.3)
+        else:
+            time.sleep(0.05)
+
+    # 排序：背离度优先，其次OI涨幅
+    results.sort(key=lambda x: (x["divergence"], x["oi_d6h"]), reverse=True)
+    print(f"  ✅ 发现 {len(results)} 个 OI/价格背离标的")
+    return results
+
+
+def build_divergence_report(results: list) -> str:
+    if not results:
+        return ""
+
+    now = datetime.now(timezone(timedelta(hours=8)))
+
+    # 分层：有pool加持的优先
+    in_pool  = [r for r in results if r["in_pool"]]
+    out_pool = [r for r in results if not r["in_pool"]]
+
+    # 过滤掉已经转跌/太晚的（时机不对）
+    def timing_ok(r):
+        return r["timing"]["label"] not in ("🔴太晚", "⚫转跌")
+
+    pool_good = [r for r in in_pool  if timing_ok(r)]
+    out_good  = [r for r in out_pool if timing_ok(r)]
+    too_late  = [r for r in results  if not timing_ok(r)]
+
+    lines = [
+        f"🌊 **OI暗流背离榜** — 全市场",
+        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+        f"━━━━━━━━━━━━━━━━━━",
+        f"逻辑：OI大涨+价格不动 = 资金建仓中，价格尚未反应",
+        f"背离度 = OI涨幅% ÷ |价格涨幅%|（越高越强）",
+        "",
+    ]
+
+    if pool_good:
+        lines.append(f"🎯 **收筹池内背离** ({len(pool_good)}个) ← 双重确认，优先关注")
+        for r in pool_good[:6]:
+            t = r["timing"]
+            lines += [
+                f"  💤 **{r['coin']}** | 背离{r['divergence']:.1f}x | OI {r['oi_d6h']:+.1f}% (6h) / {r['oi_d1h']:+.1f}% (1h)",
+                f"     价格 {r['px_chg']:+.1f}% | ${r['price']:.6g} | OI总量 {format_usd(r['oi_usd'])}",
+                f"     费率 {r['fr_pct']:+.4f}% | 成交 {format_usd(r['vol_24h'])} | {t['label']} {t['reason']}",
+                "",
+            ]
+
+    if out_good:
+        show = out_good[:8]
+        lines.append(f"📊 **全市场背离** (共{len(out_good)}个，展示前{len(show)})")
+        for r in show:
+            t = r["timing"]
+            pool_tag = "💤池" if r["in_pool"] else ""
+            lines.append(
+                f"  {t['label']} **{r['coin']}** {pool_tag}| "
+                f"背离{r['divergence']:.1f}x | OI {r['oi_d6h']:+.1f}% (6h) | "
+                f"价格{r['px_chg']:+.1f}% | 费率{r['fr_pct']:+.3f}%"
+            )
+            lines.append(
+                f"     {t['reason']}  (MA25偏{t['ext_pct']:+.0f}% 量比{t['vol_ratio']}x)"
+            )
+        lines.append("")
+
+    if too_late:
+        lines.append(f"⚠️ **已过时/已反转** ({len(too_late)}个) — 跳过")
+        for r in too_late[:4]:
+            lines.append(f"  {r['timing']['label']} {r['coin']} | 背离{r['divergence']:.1f}x | {r['timing']['reason']}")
+
+    lines += [
+        "",
+        f"📖 背离度参考: >10=极强 | 5-10=强 | 3-5=中",
+        f"  🟢太早=底部蓄势可建仓 | 🟡入场=突破初期 | 🔴/⚫跳过",
+    ]
+
+    return "\n".join(lines)
+
+
 # ── Hyperliquid 鲸鱼扫描 ──────────────────────────────────────────────────────
 
 HL_API          = "https://api.hyperliquid.xyz/info"
@@ -845,7 +1013,6 @@ def main():
     if mode in ("full", "oi"):
         # === 综合扫描：OI + 费率 + 收筹 三维合一 ===
         watchlist = load_watchlist_symbols(conn)
-        watchlist_set = set(watchlist)
         
         if not watchlist:
             print("⚠️ 标的池为空，先运行 pool 模式")
@@ -1274,7 +1441,6 @@ def main():
         # 三个表都出现的币
         chase_coins = set(s["coin"] for s in chase[:10])
         combined_coins = set(s["coin"] for s in combined[:10])
-        ambush_coins = set(s["coin"] for s in ambush[:10])
         
         # 追多+综合都出现
         overlap_2 = chase_coins & combined_coins
@@ -1307,6 +1473,13 @@ def main():
         
         report = "\n".join(lines)
         send_telegram(report)
+
+        # === OI 暗流背离扫描（全市场）===
+        pool_syms = set(pool_map.keys())
+        div_results = scan_oi_divergence(ticker_map, funding_map, pool_syms)
+        div_report = build_divergence_report(div_results)
+        if div_report:
+            send_telegram(div_report)
 
         # === Hyperliquid 鲸鱼扫描（收筹池内币，65分钟时间窗口）===
         pool_coin_names = {sym.replace("USDT", "") for sym in pool_map.keys()}
