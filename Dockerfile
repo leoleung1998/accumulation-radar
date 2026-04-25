@@ -10,8 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Write cron schedules
-RUN echo "0 10 * * * cd /app && python3 accumulation_radar.py pool >> /app/pool.log 2>&1" > /etc/cron.d/radar && \
-    echo "30 * * * * cd /app && python3 accumulation_radar.py oi >> /app/oi.log 2>&1" >> /etc/cron.d/radar && \
+RUN echo "0 10 * * * root cd /app && /usr/local/bin/python3 accumulation_radar.py pool >> /app/pool.log 2>&1" > /etc/cron.d/radar && \
+    echo "30 * * * * root cd /app && /usr/local/bin/python3 accumulation_radar.py oi >> /app/oi.log 2>&1" >> /etc/cron.d/radar && \
     chmod 0644 /etc/cron.d/radar && \
     crontab /etc/cron.d/radar
 
