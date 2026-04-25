@@ -1,6 +1,9 @@
 .env.oi
 .env
 accumulation.db
+backtest.db
+backtest_cache/
+backtest_cache_1h/
 *.pyc
 __pycache__/
 *.log
