@@ -461,11 +461,11 @@ def build_pool_report(results):
     if not results:
         return ""
     
-    now = datetime.now(timezone(timedelta(hours=8)))
+    now = datetime.now(timezone(timedelta(hours=1)))
     
     lines = [
         f"🏦 **庄家收筹雷达** — 标的池更新",
-        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} BST",
         f"━━━━━━━━━━━━━━━━━━",
         f"扫描 {len(results)} 个合约，发现标的：",
         "",
@@ -518,7 +518,7 @@ def build_oi_alert_report(alerts, watchlist_coins):
     if not alerts:
         return ""
     
-    now = datetime.now(timezone(timedelta(hours=8)))
+    now = datetime.now(timezone(timedelta(hours=1)))
     
     # 区分：池内 vs 池外
     in_pool = [a for a in alerts if a["symbol"] in watchlist_coins]
@@ -526,7 +526,7 @@ def build_oi_alert_report(alerts, watchlist_coins):
     
     lines = [
         f"📊 **OI异动扫描** [收筹池]",
-        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} BST",
         f"━━━━━━━━━━━━━━━━━━",
         "",
     ]
@@ -603,7 +603,7 @@ def send_telegram(text):
 def save_watchlist(conn, results):
     """保存标的池到数据库"""
     c = conn.cursor()
-    now = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(timezone(timedelta(hours=1))).strftime("%Y-%m-%d %H:%M")
     
     for r in results:
         c.execute("""INSERT OR REPLACE INTO watchlist 
@@ -680,10 +680,10 @@ def build_fuel_report(fuel_targets, squeeze_targets):
     if not fuel_targets and not squeeze_targets:
         return ""
     
-    now = datetime.now(timezone(timedelta(hours=8)))
+    now = datetime.now(timezone(timedelta(hours=1)))
     lines = [
         f"🔥 **空头燃料扫描**",
-        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} BST",
         f"━━━━━━━━━━━━━━━━━━",
         f"逻辑：费率负=大量做空，庄家拉盘爆空单+收资金费",
         "",
@@ -817,7 +817,7 @@ def build_divergence_report(results: list) -> str:
     if not results:
         return ""
 
-    now = datetime.now(timezone(timedelta(hours=8)))
+    now = datetime.now(timezone(timedelta(hours=1)))
 
     # 分层：有pool加持的优先
     in_pool  = [r for r in results if r["in_pool"]]
@@ -833,7 +833,7 @@ def build_divergence_report(results: list) -> str:
 
     lines = [
         f"🌊 **OI暗流背离榜** — 全市场",
-        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+        f"⏰ {now.strftime('%Y-%m-%d %H:%M')} BST",
         f"━━━━━━━━━━━━━━━━━━",
         f"逻辑：OI大涨+价格不动 = 资金建仓中，价格尚未反应",
         f"背离度 = OI涨幅% ÷ |价格涨幅%|（越高越强）",
@@ -942,7 +942,7 @@ def scan_hyperliquid_whales(conn, pool_coin_names: set) -> list:
             ).fetchone():
                 continue
 
-            now_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+            now_str = datetime.now(timezone(timedelta(hours=1))).strftime("%Y-%m-%d %H:%M")
             conn.execute(
                 "INSERT OR IGNORE INTO hl_seen_trades VALUES (?, ?, ?, ?)",
                 (trade_id, coin, notional, now_str)
@@ -952,7 +952,7 @@ def scan_hyperliquid_whales(conn, pool_coin_names: set) -> list:
             funding_pct = float(ctx.get("funding", 0)) * 100
             side_label  = "🟢买多" if t["side"] == "B" else "🔴卖空"
             trade_time  = datetime.fromtimestamp(
-                int(t["time"]) / 1000, tz=timezone(timedelta(hours=8))
+                int(t["time"]) / 1000, tz=timezone(timedelta(hours=1))
             ).strftime("%H:%M:%S")
 
             alerts.append({
@@ -968,10 +968,10 @@ def scan_hyperliquid_whales(conn, pool_coin_names: set) -> list:
 
     if alerts:
         alerts.sort(key=lambda x: x["notional"], reverse=True)
-        now = datetime.now(timezone(timedelta(hours=8)))
+        now = datetime.now(timezone(timedelta(hours=1)))
         lines = [
             f"🐋 **Hyperliquid 鲸鱼入场**",
-            f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+            f"⏰ {now.strftime('%Y-%m-%d %H:%M')} BST",
             f"━━━━━━━━━━━━━━━━━━",
             f"收筹池内检测到 {len(alerts)} 笔大单（>{format_usd(HL_MIN_NOTIONAL)}）",
             "",
@@ -1333,10 +1333,10 @@ def main():
             t = timing_map.get(sym)
             return t["label"] if t else ""
 
-        now = datetime.now(timezone(timedelta(hours=8)))
+        now = datetime.now(timezone(timedelta(hours=1)))
         lines = [
             f"🏦 **庄家雷达** 三策略+热度",
-            f"⏰ {now.strftime('%Y-%m-%d %H:%M')} CST",
+            f"⏰ {now.strftime('%Y-%m-%d %H:%M')} BST",
         ]
 
         # 表0: 热度榜
